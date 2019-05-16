@@ -120,51 +120,29 @@ function parse_string(ps::MemoryParserState, b::IOBuffer)
     b
 end
 
-function parse_number(pc::ParserContext, ps::MemoryParserState)
-    s = p = ps.s
-    e = length(ps)
-    isint = true
-
-    # Determine the end of the floating point by skipping past ASCII values
-    # 0-9, +, -, e, E, and .
-    while p ≤ e
-        @inbounds c = ps[p]
-        if isjsondigit(c) || MINUS_SIGN == c  # no-op
-        elseif PLUS_SIGN == c || LATIN_E == c || LATIN_UPPER_E == c ||
-                DECIMAL_POINT == c
-            isint = false
-        else
-            break
-        end
-        p += 1
-    end
-    ps.s = p
-
-    number_from_bytes(pc, ps, isint, ps, s, p - 1)
-end
-
-function parse_number(pc::ParserContext{<:Any,<:Any,true}, ps::MemoryParserState)
+function parse_number(pc::ParserContext{<:Any,<:Any,AllowNanInf}, ps::MemoryParserState) where AllowNanInf
     s = p = ps.s
     e = length(ps)
     isint = true
     negative = false
 
-    # Determine the end of the floating point by skipping past ASCII values
-    # 0-9, +, -, e, E, and .
     @inbounds c = ps[p]
 
-    if c == MINUS_SIGN
+    # Parse and keep track of initial minus sign (for parsing -Infinity)
+    if AllowNanInf && c == MINUS_SIGN
         negative = true
         p += 1
     end
 
+    # Determine the end of the floating point by skipping past ASCII values
+    # 0-9, +, e, E, and .
     while p ≤ e
         @inbounds c = ps[p]
         if isjsondigit(c) || MINUS_SIGN == c  # no-op
         elseif PLUS_SIGN == c || LATIN_E == c || LATIN_UPPER_E == c ||
                 DECIMAL_POINT == c
             isint = false
-        elseif LATIN_UPPER_I == c
+        elseif AllowNanInf && LATIN_UPPER_I == c
             ps.s = p
             infinity = parse_jsconstant(pc, ps)
             return (negative ? -infinity : infinity)

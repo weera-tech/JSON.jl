@@ -37,7 +37,7 @@ mutable struct StreamingParserState{T <: IO} <: ParserState
 end
 StreamingParserState(io::IO) = StreamingParserState(io, 0x00, true, PushVector{UInt8}())
 
-struct ParserContext{DictType, IntType, AllowNan} end
+struct ParserContext{DictType, IntType, AllowNanInf} end
 
 """
 Return the byte at the current position of the `ParserState`. If there is no
@@ -173,7 +173,7 @@ function parse_value(pc::ParserContext, ps::ParserState)
     end
 end
 
-function parse_jsconstant(::ParserContext, ps::ParserState)
+function parse_jsconstant(::ParserContext{<:Any,<:Any,AllowNanInf}, ps::ParserState) where AllowNanInf
     c = advance!(ps)
     if c == LATIN_T      # true
         skip!(ps, LATIN_R, LATIN_U, LATIN_E)
@@ -184,26 +184,10 @@ function parse_jsconstant(::ParserContext, ps::ParserState)
     elseif c == LATIN_N  # null
         skip!(ps, LATIN_U, LATIN_L, LATIN_L)
         nothing
-    else
-        _error(E_UNEXPECTED_CHAR, ps)
-    end
-end
-
-function parse_jsconstant(::ParserContext{<:Any,<:Any,true}, ps::ParserState)
-    c = advance!(ps)
-    if c == LATIN_T      # true
-        skip!(ps, LATIN_R, LATIN_U, LATIN_E)
-        true
-    elseif c == LATIN_F  # false
-        skip!(ps, LATIN_A, LATIN_L, LATIN_S, LATIN_E)
-        false
-    elseif c == LATIN_N  # null
-        skip!(ps, LATIN_U, LATIN_L, LATIN_L)
-        nothing
-    elseif c == LATIN_UPPER_N
+    elseif AllowNanInf && c == LATIN_UPPER_N
         skip!(ps, LATIN_A, LATIN_UPPER_N)
         NaN
-    elseif c == LATIN_UPPER_I
+    elseif AllowNanInf && c == LATIN_UPPER_I
         skip!(ps, LATIN_N, LATIN_F, LATIN_I, LATIN_N, LATIN_I, LATIN_T, LATIN_Y)
         Inf
     else
@@ -386,11 +370,21 @@ function number_from_bytes(pc::ParserContext,
 end
 
 
-function parse_number(pc::ParserContext, ps::ParserState)
+function parse_number(pc::ParserContext{<:Any,<:Any,AllowNanInf}, ps::ParserState) where AllowNanInf
     # Determine the end of the floating point by skipping past ASCII values
     # 0-9, +, -, e, E, and .
     number = ps.utf8array
     isint = true
+    negative = false
+
+    c = current(ps)
+
+    # Parse and keep track of initial minus sign (for parsing -Infinity)
+    if AllowNanInf && c == MINUS_SIGN
+        push!(number, UInt8(c)) # save in case the next character is a number
+        negative = true
+        incr!(ps)
+    end
 
     @inbounds while hasmore(ps)
         c = current(ps)
@@ -400,42 +394,7 @@ function parse_number(pc::ParserContext, ps::ParserState)
         elseif c in (PLUS_SIGN, LATIN_E, LATIN_UPPER_E, DECIMAL_POINT)
             push!(number, UInt8(c))
             isint = false
-        else
-            break
-        end
-
-        incr!(ps)
-    end
-
-    v = number_from_bytes(pc, ps, isint, number, 1, length(number))
-    resize!(number, 0)
-    return v
-end
-
-function parse_number(pc::ParserContext{<:Any,<:Any,true}, ps::ParserState)
-    # Determine the end of the floating point by skipping past ASCII values
-    # 0-9, +, -, e, E, and .
-    number = ps.utf8array
-    isint = true
-    negative = false
-
-    c = current(ps)
-
-    if c == MINUS_SIGN
-        push!(number, UInt8(c)) # save in case the next character is a number
-        negative = true
-        incr!(ps)
-    end
-
-    @inbounds while hasmore(ps)
-        c = current(ps)
-
-        if isjsondigit(c)
-            push!(number, UInt8(c))
-        elseif c in (PLUS_SIGN, LATIN_E, LATIN_UPPER_E, DECIMAL_POINT)
-            push!(number, UInt8(c))
-            isint = false
-        elseif c == LATIN_UPPER_I
+        elseif AllowNanInf && c == LATIN_UPPER_I
             infinity = parse_jsconstant(pc, ps)
             return (negative ? -infinity : infinity)
         else
@@ -449,7 +408,6 @@ function parse_number(pc::ParserContext{<:Any,<:Any,true}, ps::ParserState)
     resize!(number, 0)
     return v
 end
-
 
 
 unparameterize_type(x) = x # Fallback for nontypes -- functions etc
